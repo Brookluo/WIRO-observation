@@ -16,11 +16,12 @@ def show_imstat(line: np.ndarray):
     mean, std, median : float
         the mean, standard deviation and median of the image
     """    
-    line = line.ravel()
+    # to prevent overflow for uint16 for adu
+    line = line.ravel().astype(np.int64)
     print("Mean:", np.mean(line),
           "Std:", np.std(line),
           "Median:", np.median(line),
-          "RMS:", np.sqrt(np.mean(line ** 2)),
+          "RMS:", np.sqrt(np.mean(line)),
           "Min:", np.min(line),
           "Max:", np.max(line)
           )
@@ -58,5 +59,6 @@ def plot_zscale_image(imdata: np.ndarray, ax_handle, cmap=None, vmin=None, vmax=
     im = ax_handle.imshow(imdata, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
     if cmap:
         fig.colorbar(im, ax=ax_handle)
+    return vmin, vmax
     
     
