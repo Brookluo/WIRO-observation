@@ -41,6 +41,10 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
         # to avoid any potential inplace operation contamination
         ccd_im = input_imdata.copy()
     # ! needs to pay extra attention to the indexing method (xy or ij), column-row or row-column
+    # type(adu) == uint16, what if we have minus counts causing overflow? (i.e.)
+    # when the image count is actually all noise
+    # change the datatype to int 64 to prevent that
+    ccd_im.data = ccd_im.data.astype(np.int64)
     # Now it is row-column, transpose the image to get column-row
     ccd_im.data = ccd_im.data.T
     # Following WDPzero.cl for four amplifiers
@@ -84,6 +88,7 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
     output_im.data[2049 - 1 : 4096, 2049 - 1 : 4096] = amp4_zt.data
     
     output_im.data = output_im.data.T
+    output_im.data = output_im.data.astype(np.int16)
     
     return output_im
 
@@ -188,9 +193,10 @@ def reduce_images(
         ccd_im = CCDData.read(img, unit=u.adu)
         # Default to use a chebyshev polynomial
         ccd_zt = overscan_sub_trim(ccd_im, overscan_fit=cheb)
-        file_loc = Path(output_dir, img.stem + "_zt.fits")
-        ccd_zt.write(file_loc, overwrite=overwrite)
-        all_img_zt.append(file_loc)
+        zt_file_loc = Path(output_dir, img.stem + "_zt.fits")
+        ccd_zt.write(zt_file_loc, overwrite=overwrite)
+        all_img_zt.append(zt_file_loc)
+    
     if bias_img:
         # make master bias and bias subtraction
         bias_zt_files = [os.path.join(output_dir, img.stem + "_zt.fits") for img in bias_img]
@@ -205,16 +211,19 @@ def reduce_images(
             mem_limit=350e6,
         )
         combined_bias.write(os.path.join(output_dir, "masterbias.fits"), overwrite=overwrite)
-    # TODO need a criterion to decide whether to subtract masterbias or not
-    for img in all_img_zt:
-        ccd_im = CCDData.read(img, unit=u.adu)
-        ccd_b = ccdp.subtract_bias(ccd_im, combined_bias)
-        # from _zt to _b suffix
-        ccd_b.write(os.path.join(output_dir, img.stem.rsplit("_")[0] + "_b.fits"), overwrite=overwrite)
+        # TODO need a criterion to decide whether to subtract masterbias or not
+        all_img_b = []
+        for img in all_img_zt:
+            ccd_im = CCDData.read(img, unit=u.adu)
+            ccd_b = ccdp.subtract_bias(ccd_im, combined_bias)
+            # from _zt to _b suffix
+            bias_file_loc = Path(output_dir, img.stem.rsplit("_")[0] + "_b.fits")
+            ccd_b.write(bias_file_loc, overwrite=overwrite)
+            all_img_b.append(bias_file_loc)
     
     if dark_img:
         # make master dark
-        dark_b_files = [img.stem + "_zt.fits" for img in dark_img]
+        dark_b_files = [os.path.join(output_dir, img.stem + "_b.fits") for img in dark_img]
         # TODO check the exposure time, use the longest exposure ones
         combined_dark_clip_med = ccdp.combine(
             dark_b_files,
@@ -226,8 +235,16 @@ def reduce_images(
         combined_dark_clip_med.write(os.path.join(output_dir, "masterdark.fits"), overwrite=overwrite)
         # For WIRO, dark current is not a significant issue, so we need to think
         # whether remove the dark current or not.
+        for img in all_img_b:
+            ccd_im = CCDData.read(img, unit=u.adu)
+            ccd_d = ccdp.subtract_dark(ccd_im, combined_dark_clip_med)
+            # from _zt to _b suffix
+            dark_file_loc = Path(output_dir, img.stem.rsplit("_")[0] + "_d.fits")
+            ccd_d.write(dark_file_loc, overwrite=overwrite)
+    
     if flat_img:
         for band, files in flat_img.items():
             make_masterflat(files, output_dir, band, overwrite=overwrite)
+        # TODO flat field correction on all images
     # TODO Distortion correction
     # linearity check
