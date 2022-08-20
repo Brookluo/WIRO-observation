@@ -4,6 +4,7 @@ import astropy.units as u
 import numpy as np
 import os
 from pathlib import Path
+import argparse
 
 
 def overscan_sub_trim(input_imdata, overscan_fit: callable):
@@ -266,3 +267,15 @@ def reduce_images(
         # TODO flat field correction on all images
     # TODO Distortion correction
     # linearity check
+
+if __name__ == "__main__":
+    import configparser
+    
+    parser = argparse.ArgumentParser(description="Give a observation log file to process the images.")
+    parser.add_argument("obs_log_path", help="The observation log file.")
+    args = parser.parse_args()
+    obs_log = configparser.ConfigParser()
+    obs_log.optionxform = str
+    obs_log.read(args.obs_log_path)
+    
+    
