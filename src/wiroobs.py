@@ -20,7 +20,7 @@ class WIROObs:
     def __init__(self, obs_log_path: str):
         self.obs_log_path = obs_log_path
         self.parse_obs_log()
-        if self.images_dict["science"]:
+        if self.images_dict["bad_images"]:
             self.remove_bad_images()
         # keep a record of bad images for references
         self._bad_images = self.images_dict["bad_images"]
@@ -77,6 +77,7 @@ class WIROObs:
         bias_img = []
         dark_img = []
         sci_img = []
+        # TODO update functions after refine the image reduction stages
         if overscan_sub:
            overscan_sub
         if bias_sub:
