@@ -8,38 +8,47 @@ output_dir=
 
 [bad_images]
 # this must be the full names
+imdir=
+# this is a string separated by commas
 images=
 
 [science]
-file_format=fits
+filters=g,r,i
+# this may not be necessary
+imdir=
 name_format=a{:>03}.fit
-range=10-100
+imrange=10-100
+
+[science_g]
+imdir=
+name_format=a{:>03}.fit
+imrange=1,2,3
 
 [bias]
-file_format=fits
+imdir=
 name_format=b{:>03}.fit
-range=0-10
+image_range=0-10
 
 [dark]
-file_format=fits
+imdir=
 name_format=d{:>03}.fit
-range=0-10
+imrange=0-10
 
 [flat]
 filters=g,r,i
 
 [flat_g]
-file_format=fits
-name_format=d{:>03}.fit
-range=0-10
+imdir=
+name_format=f{:>03}.fit
+imrange=0-10
 
 [flat_r]
-file_format=fits
-name_format=d{:>03}.fit
-range=0-10
+imdir=
+name_format=f{:>03}.fit
+imrange=0-10
 
 [flat_i]
-file_format=fits
-name_format=d{:>03}.fit
-range=0-10
+imdir=
+name_format=f{:>03}.fit
+imrange=0-10
 

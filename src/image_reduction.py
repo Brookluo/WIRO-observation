@@ -2,11 +2,10 @@ import ccdproc as ccdp
 from astropy.nddata import CCDData
 import astropy.units as u
 import numpy as np
-import os
 from pathlib import Path
 import argparse
 
-
+        
 def overscan_sub_trim(input_imdata, overscan_fit: callable):
     """Subtract the overscan region and then trim the image to remove
     the overscan region. This is a translation of Chip's WDPzero.cl
@@ -120,7 +119,7 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
     CCDdata
         a CCDData object of the normalized, count weighted master flat
     """
-    from utils import plot_zscale_image, show_imstat
+    from .plot_utils import plot_zscale_image, show_imstat
     import matplotlib.pyplot as plt
 
     # use inverse median to scale all the image to unity first
@@ -141,14 +140,14 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
         sigma_clip_dev_func=np.ma.std,
     )
     combined_flat_clip_med_weighted_avg.write(
-        os.path.join(output_dir, f"masterflat{band}_clip_med_weighted_count.fits"),
+        Path(output_dir, f"masterflat{band}_clip_med_weighted_count.fits"),
         overwrite=overwrite,
     )
     combined_flat_clip_med_weighted_avg.data /= np.mean(
         combined_flat_clip_med_weighted_avg.data
     )
     combined_flat_clip_med_weighted_avg.write(
-        os.path.join(output_dir, f"masterflat{band}_norm.fits"), overwrite=overwrite
+        Path(output_dir, f"masterflat{band}_norm.fits"), overwrite=overwrite
     )
     fig, ax = plt.subplots(1, 2, figsize=(30, 10))
     plot_zscale_image(combined_flat_clip_med_weighted_avg.data, ax[0], "gray")
@@ -161,8 +160,10 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
     return combined_flat_clip_med_weighted_avg
 
 
+# really should decompose this function into smaller functions
+# so each function just process one stage
 def reduce_images(
-    sci_img: list,
+    sci_img: dict[str, list],
     bias_img: list,
     dark_img: list,
     flat_img: dict[str, list],
@@ -170,19 +171,21 @@ def reduce_images(
     overwrite=False,
 ):
     """Reduce a list of images using the master flat and master bias.
-    All paths in the arguments must be full path to files.
+    All paths in the arguments must be full path to files. The path 
+    should be python Path object.
 
     Parameters
     ----------
-    sci_img : list
-        A list of path to science images.
-    bias_img : list
+    sci_img : dict[str, list[Path]]
+        A dictionary of path to science images. The key is the filter name.
+        the value is the list of path to science images for that band.
+    bias_img : list[Path]
         A list of path to bias images.
-    dark_img : list
+    dark_img : list[Path]
         A list of path to dark images.
-    flat_img : dict[str, list]
-        A dictionary of path to flat images. The key is the band name.
-        the value is the list of path to flat images for that band.
+    flat_img : dict[str, list[Path]]
+        A dictionary of path to flat images. The key is the filter name.
+        the value is the list of path to flat images for that filter.
     output_dir : str
         The output directory to save the reduced images.
     overwrite : bool, optional
@@ -191,31 +194,31 @@ def reduce_images(
     from astropy.modeling import polynomial
 
     # first do overscan subtraction on all images
-    all_img = sci_img
+    all_img = list(sci_img.values())
     if bias_img:
         all_img.extend(bias_img)
     if dark_img:
         all_img.extend(dark_img)
     if flat_img:
-        for v in flat_img.values():
-            all_img.extend(v)
+        all_img.extend(list(flat_img.values()))
     poly = polynomial.Polynomial1D(degree=3)
     cheb = polynomial.Chebyshev1D(degree=3)
     leg = polynomial.Legendre1D(degree=3)
     herm = polynomial.Hermite1D(degree=3)
-
-    all_img_zt = []
+    # assume all images have the same suffix
+    file_suffix = all_img[0].suffix
+    
+    cur_stage = "z"
     for img in all_img:
         ccd_im = CCDData.read(img, unit=u.adu)
         # Default to use a chebyshev polynomial
         ccd_zt = overscan_sub_trim(ccd_im, overscan_fit=cheb)
-        zt_file_loc = Path(output_dir, img.stem + "_zt.fits")
-        ccd_zt.write(zt_file_loc, overwrite=overwrite)
-        all_img_zt.append(zt_file_loc)
-
+        post_zt_file_loc = Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}")
+        ccd_zt.write(post_zt_file_loc, overwrite=overwrite)
+        
     if bias_img:
         # make master bias and bias subtraction
-        bias_zt_files = [os.path.join(output_dir, img.stem + "_zt.fits") for img in bias_img]
+        bias_zt_files = [Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}") for img in bias_img]
         combined_bias = ccdp.combine(
             bias_zt_files,
             method="average",
@@ -226,20 +229,24 @@ def reduce_images(
             sigma_clip_dev_func=np.ma.std,
             mem_limit=350e6,
         )
-        combined_bias.write(os.path.join(output_dir, "masterbias.fits"), overwrite=overwrite)
+        combined_bias.write(Path(output_dir, "masterbias.fits"), overwrite=overwrite)
         # TODO need a criterion to decide whether to subtract masterbias or not
-        all_img_b = []
-        for img in all_img_zt:
-            ccd_im = CCDData.read(img, unit=u.adu)
+        last_stage = cur_stage
+        cur_stage += "b"
+        for img in all_img:
+            if img in bias_img:
+                continue
+            img_last_stage = Path(output_dir, f"{img.stem}_{last_stage}{file_suffix}")
+            ccd_im = CCDData.read(img_last_stage, unit=u.adu)
             ccd_b = ccdp.subtract_bias(ccd_im, combined_bias)
             # from _zt to _b suffix
-            bias_file_loc = Path(output_dir, img.stem.rsplit("_")[0] + "_b.fits")
-            ccd_b.write(bias_file_loc, overwrite=overwrite)
-            all_img_b.append(bias_file_loc)
-
+            post_bias_file_loc = Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}")
+            ccd_b.write(post_bias_file_loc, overwrite=overwrite)
+            all_img.append(post_bias_file_loc)
+            
     if dark_img:
         # make master dark
-        dark_b_files = [os.path.join(output_dir, img.stem + "_b.fits") for img in dark_img]
+        dark_b_files = [Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}") for img in dark_img]
         # TODO check the exposure time, use the longest exposure ones
         combined_dark_clip_med = ccdp.combine(
             dark_b_files,
@@ -251,14 +258,19 @@ def reduce_images(
             sigma_clip_dev_func=np.ma.std,
             mem_limit=350e6,
         )
-        combined_dark_clip_med.write(os.path.join(output_dir, "masterdark.fits"), overwrite=overwrite)
+        combined_dark_clip_med.write(Path(output_dir, "masterdark.fits"), overwrite=overwrite)
         # For WIRO, dark current is not a significant issue, so we need to think
         # whether remove the dark current or not.
-        for img in all_img_b:
-            ccd_im = CCDData.read(img, unit=u.adu)
+        last_stage = cur_stage
+        cur_stage += "d"
+        for img in all_img:
+            if img in dark_img:
+                continue
+            img_last_stage = Path(output_dir, f"{img.stem}_{last_stage}{file_suffix}")
+            ccd_im = CCDData.read(img_last_stage, unit=u.adu)
             ccd_d = ccdp.subtract_dark(ccd_im, combined_dark_clip_med)
             # from _zt to _b suffix
-            dark_file_loc = Path(output_dir, img.stem.rsplit("_")[0] + "_d.fits")
+            dark_file_loc = Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}")
             ccd_d.write(dark_file_loc, overwrite=overwrite)
 
     if flat_img:
@@ -269,13 +281,10 @@ def reduce_images(
     # linearity check
 
 if __name__ == "__main__":
-    import configparser
     
     parser = argparse.ArgumentParser(description="Give a observation log file to process the images.")
     parser.add_argument("obs_log_path", help="The observation log file.")
     args = parser.parse_args()
-    obs_log = configparser.ConfigParser()
-    obs_log.optionxform = str
-    obs_log.read(args.obs_log_path)
+    # obs_log.read(args.obs_log_path)
     
     
