@@ -93,9 +93,104 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
     return output_im
 
 
+def all_overscan_sub_trim(filelist: list, output_dir: str, polyfit='cheb', 
+                          overwrite=False):
+    """_summary_
+
+    Parameters
+    ----------
+    filelist : list
+        _description_
+    output_dir : str
+        _description_
+    polyfit : str, optional
+        _description_, by default 'cheb'
+    overwrite : bool, optional
+        _description_, by default False
+
+    Raises
+    ------
+    ValueError
+        _description_
+    """    
+    from astropy.modeling import polynomial
+    
+    # list a bunch of polynomial models, usually 3rd order is enough
+    poly = polynomial.Polynomial1D(degree=3)
+    cheb = polynomial.Chebyshev1D(degree=3)
+    leg = polynomial.Legendre1D(degree=3)
+    herm = polynomial.Hermite1D(degree=3)
+    if polyfit == 'cheb':
+        fit_func = cheb
+    elif polyfit == 'poly':
+        fit_func = poly
+    elif polyfit == 'leg':
+        fit_func = leg
+    elif polyfit == 'herm':
+        fit_func = herm
+    else:
+        raise ValueError(f"Unknown polynomial overscan fitting model {polyfit}")
+        
+    # assume all images have the same suffix
+    file_suffix = filelist[0].suffix
+    cur_stage = "z"
+    for img in filelist:
+        ccd_im = CCDData.read(img, unit=u.adu)
+        # Default to use a chebyshev polynomial
+        ccd_zt = overscan_sub_trim(ccd_im, overscan_fit=fit_func)
+        post_zt_file_loc = Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}")
+        ccd_zt.write(post_zt_file_loc, overwrite=overwrite)
+
+
+def bias_subtract(filelist: list, bias_filelist:list, output_dir: str, 
+                  overwrite=False):
+    """_summary_
+
+    Parameters
+    ----------
+    filelist : list
+        _description_
+    bias_filelist : list
+        _description_
+    output_dir : str
+        _description_
+    overwrite : bool, optional
+        _description_, by default False
+    """
+    # assume all images have the same suffix
+    file_suffix = filelist[0].suffix
+    # make master bias and bias subtraction
+    # bias_zt_files = [Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}") for img in bias_filelist]
+    combined_bias = ccdp.combine(
+        bias_filelist,
+        method="average",
+        sigma_clip=True,
+        sigma_clip_low_thresh=5,
+        sigma_clip_high_thresh=5,
+        sigma_clip_func=np.ma.median,
+        sigma_clip_dev_func=np.ma.std,
+        mem_limit=350e6,
+    )
+    combined_bias.write(Path(output_dir, "masterbias.fits"), overwrite=overwrite)
+    # TODO need a criterion to decide whether to subtract masterbias or not
+    
+    cur_stage = "b"
+    for img in filelist:
+        if img in bias_filelist:
+            continue
+        ccd_im = CCDData.read(img, unit=u.adu)
+        ccd_b = ccdp.subtract_bias(ccd_im, combined_bias)
+        # from _z to _zb suffix
+        if "_" in img.stem:
+            new_fname = f"{img.stem+cur_stage}{file_suffix}"
+        else:
+            new_fname = f"{img.stem}_{cur_stage}{file_suffix}"
+        post_bias_file_loc = Path(output_dir, new_fname )
+        ccd_b.write(post_bias_file_loc, overwrite=overwrite)
+
+
 def inv_median(a):
     return 1 / np.median(a)
-
 
 def make_masterflat(filelist, output_dir, band, overwrite=False):
     """Make a master flat for a given band using median combine with 3-sigma clipping.
@@ -159,6 +254,45 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
     show_imstat(combined_flat_clip_med_weighted_avg.data)
     return combined_flat_clip_med_weighted_avg
 
+
+def flat_correct(filelist: list, masterflat_filelist: dict[str, list], 
+                output_dir: str, overwrite=False):
+    """_summary_
+
+    Parameters
+    ----------
+    filelist : list
+        _description_
+    masterflat_filelist : dict[str, list]
+        _description_
+    output_dir : str
+        _description_
+    overwrite : bool, optional
+        _description_, by default False
+    """    
+    import fitsio
+    
+    file_suffix = filelist[0].suffix
+    # separate files into different filters
+    filter_image = {band: [] for band in masterflat_filelist.keys()}
+    for img in filelist:
+        header = fitsio.read_header(img)
+        # filter name is the string after column
+        # Filter 5: i' 54605
+        fitlername = header["FILTER"].rsplit(":")[-1].strip()
+        filter_image[fitlername].append(img)
+    cur_stage = "f"
+    for band, masterflat in masterflat_filelist.items():
+        for img in filter_image[band]:
+            ccd_im = CCDData.read(filelist, unit=u.adu)
+            ccd_masterflat = CCDData.read(masterflat, unit=u.adu)
+            ccd_f = ccdp.flat_correct(ccd_im, ccd_masterflat)
+            if "_" in img.stem:
+                new_fname = f"{img.stem+cur_stage}{file_suffix}"
+            else:
+                new_fname = f"{img.stem}_{cur_stage}{file_suffix}"
+            post_flat_file_loc = Path(output_dir, new_fname)
+            ccd_f.write(post_flat_file_loc, overwrite=overwrite)
 
 # really should decompose this function into smaller functions
 # so each function just process one stage

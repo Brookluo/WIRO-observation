@@ -1,10 +1,10 @@
 import configparser
 from pathlib import Path
-
+import logging
 from astropy.time import Time
 
 from .image_utils import generate_images_fullpath
-from .image_reduction import reduce_images
+from .image_reduction import all_overscan_sub_trim, bias_subtract, flat_correct
 
 
 class WIROObs:
@@ -25,6 +25,8 @@ class WIROObs:
         # keep a record of bad images for references
         self._bad_images = self.images_dict["bad_images"]
         del self.images_dict["bad_images"]
+        self.process_obs_images()
+
 
     def parse_obs_log(self):
         """_summary_"""
@@ -63,13 +65,37 @@ class WIROObs:
                     obs_log[imtype]["images"],
                 )
     
+    
     def remove_bad_images(self):
         """_summary_
         """        
         # Each file name must be unique for one night of observation!
         # Only science images can be bad!
         self.images_dict["science"] = list(set(self.images_dict["science"]) - set(self.images_dict["bad_images"]))
-       
+    
+    def overscan_subtrim(self):
+        """_summary_"""
+        pass
+        
+    
+    def bias_sub(self):
+        """_summary_"""
+        if self.images_dict["bias"]:
+            bias_img = all_overscan_sub_trim(self.images_dict["bias"])
+            bias_img = bias_subtract(bias_img)
+            self.done_bias = True
+        else:
+            logging.warning("No bias images for bias subtraction!")
+            self.done_bias = False
+    
+    
+    def dark_sub(self):
+        pass
+    
+    
+    def flat_div(self):
+        pass
+    
                 
     def process_obs_images(self, overscan_sub=True, bias_sub=True, dark_sub=True, flat_div=True, overwrite=False):
         """_summary_"""
@@ -79,7 +105,7 @@ class WIROObs:
         sci_img = []
         # TODO update functions after refine the image reduction stages
         if overscan_sub:
-           overscan_sub
+           self.overscan_sub()
         if bias_sub:
             self.bias_sub()
         if dark_sub:
