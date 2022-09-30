@@ -4,6 +4,7 @@ import astropy.units as u
 import numpy as np
 from pathlib import Path
 import argparse
+import sys
 
         
 def overscan_sub_trim(input_imdata, overscan_fit: callable):
@@ -89,6 +90,7 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
 
     output_im.data = output_im.data.T
     output_im.data = output_im.data.astype(np.int16)
+    output_im.header = ccd_im.header
 
     return output_im
 
@@ -170,6 +172,7 @@ def bias_subtract(filelist: list, bias_filelist:list, output_dir: str,
         sigma_clip_func=np.ma.median,
         sigma_clip_dev_func=np.ma.std,
         mem_limit=350e6,
+        unit=u.adu
     )
     combined_bias.write(Path(output_dir, "masterbias.fits"), overwrite=overwrite)
     # TODO need a criterion to decide whether to subtract masterbias or not
@@ -214,14 +217,14 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
     CCDdata
         a CCDData object of the normalized, count weighted master flat
     """
-    from .plot_utils import plot_zscale_image, show_imstat
+    from plot_utils import plot_zscale_image, show_imstat
     import matplotlib.pyplot as plt
 
     # use inverse median to scale all the image to unity first
     #         flat_d.data /= np.median(flat_v_d.data)
     #         flat_d.write(f"{root_dir}/a{i:0>3}_d_medscaled.fits", overwrite=True)
     # use original image brightness
-    mean_count = np.array([np.mean(CCDData.read(file).data) for file in filelist])
+    mean_count = np.array([np.mean(CCDData.read(file, unit=u.adu).data) for file in filelist])
     mean_count /= np.sum(mean_count)
     combined_flat_clip_med_weighted_avg = ccdp.combine(
         filelist,
@@ -233,6 +236,7 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
         sigma_clip_high_thresh=3,
         sigma_clip_func=np.ma.mean,
         sigma_clip_dev_func=np.ma.std,
+        unit=u.adu
     )
     combined_flat_clip_med_weighted_avg.write(
         Path(output_dir, f"masterflat{band}_clip_med_weighted_count.fits"),
@@ -284,7 +288,7 @@ def flat_correct(filelist: list, masterflat_filelist: dict[str, list],
     cur_stage = "f"
     for band, masterflat in masterflat_filelist.items():
         for img in filter_image[band]:
-            ccd_im = CCDData.read(filelist, unit=u.adu)
+            ccd_im = CCDData.read(img, unit=u.adu)
             ccd_masterflat = CCDData.read(masterflat, unit=u.adu)
             ccd_f = ccdp.flat_correct(ccd_im, ccd_masterflat)
             if "_" in img.stem:
