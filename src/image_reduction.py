@@ -102,18 +102,20 @@ def all_overscan_sub_trim(filelist: list, output_dir: str, polyfit='cheb',
     Parameters
     ----------
     filelist : list
-        _description_
-    output_dir : str
-        _description_
+        a list of files to be processed. All files in this list must be
+        full paths to them.
+    output_dir : str or pathlib.Path
+        the output directory, either a string or a pathlib.Path object
     polyfit : str, optional
-        _description_, by default 'cheb'
+        which polynomial to fit the overscan region. Available ones are
+        ('cheb', 'legendre', 'polynomial', 'herm'), by default 'cheb'
     overwrite : bool, optional
-        _description_, by default False
+        whether to overwrite file if existed, by default False
 
     Raises
     ------
     ValueError
-        _description_
+        if the polyfit is not one of the available ones
     """    
     from astropy.modeling import polynomial
     
@@ -145,24 +147,30 @@ def all_overscan_sub_trim(filelist: list, output_dir: str, polyfit='cheb',
 
 
 def bias_subtract(filelist: list, bias_filelist:list, output_dir: str, 
-                  overwrite=False):
+                  overwrite=False, retain_original_image_size=True):
     """_summary_
 
     Parameters
     ----------
     filelist : list
-        _description_
+        a list of files to be processed. All files in this list must be
+        full paths to them.
     bias_filelist : list
-        _description_
-    output_dir : str
-        _description_
+        a list of bias files to be used for bias subtraction. All files in this list must be
+        full paths to them.
+    output_dir : str or pathlib.Path
+        the output directory, either a string or a pathlib.Path object
     overwrite : bool, optional
-        _description_, by default False
+        whether overwrite file if existed, by default False
     """
     # assume all images have the same suffix
     file_suffix = filelist[0].suffix
     # make master bias and bias subtraction
     # bias_zt_files = [Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}") for img in bias_filelist]
+    dtype = None
+    if retain_original_image_size:
+        one_bias = CCDData.read(bias_filelist[0], unit=u.adu)
+        dtype = one_bias.data.dtype
     combined_bias = ccdp.combine(
         bias_filelist,
         method="average",
@@ -172,7 +180,8 @@ def bias_subtract(filelist: list, bias_filelist:list, output_dir: str,
         sigma_clip_func=np.ma.median,
         sigma_clip_dev_func=np.ma.std,
         mem_limit=350e6,
-        unit=u.adu
+        unit=u.adu,
+        dtype=dtype,
     )
     combined_bias.write(Path(output_dir, "masterbias.fits"), overwrite=overwrite)
     # TODO need a criterion to decide whether to subtract masterbias or not
@@ -189,6 +198,8 @@ def bias_subtract(filelist: list, bias_filelist:list, output_dir: str,
         else:
             new_fname = f"{img.stem}_{cur_stage}{file_suffix}"
         post_bias_file_loc = Path(output_dir, new_fname )
+        if retain_original_image_size:
+            ccd_b.data = ccd_b.data.astype(ccd_im.data.dtype)
         ccd_b.write(post_bias_file_loc, overwrite=overwrite)
 
 
@@ -239,14 +250,14 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
         unit=u.adu
     )
     combined_flat_clip_med_weighted_avg.write(
-        Path(output_dir, f"masterflat{band}_clip_med_weighted_count.fits"),
+        Path(output_dir, f"masterflat_{band}_clip_med_weighted_count.fits"),
         overwrite=overwrite,
     )
     combined_flat_clip_med_weighted_avg.data /= np.mean(
         combined_flat_clip_med_weighted_avg.data
     )
     combined_flat_clip_med_weighted_avg.write(
-        Path(output_dir, f"masterflat{band}_norm.fits"), overwrite=overwrite
+        Path(output_dir, f"masterflat_{band}_norm.fits"), overwrite=overwrite
     )
     fig, ax = plt.subplots(1, 2, figsize=(30, 10))
     plot_zscale_image(combined_flat_clip_med_weighted_avg.data, ax[0], "gray")
@@ -260,19 +271,21 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
 
 
 def flat_correct(filelist: list, masterflat_filelist: dict[str, list], 
-                output_dir: str, overwrite=False):
+                output_dir: str, overwrite=False, retain_original_image_size=True):
     """_summary_
 
     Parameters
     ----------
     filelist : list
-        _description_
+         a list of filenames of the given band flat images. All filenames must be
+        full path to that file.
     masterflat_filelist : dict[str, list]
-        _description_
-    output_dir : str
-        _description_
+        a dictionary of master flat filenames. The key is the band name, the value
+        is the full path to the master flat file.
+    output_dir : str or pathlib.Path
+        the output directory, either a string or a pathlib.Path object
     overwrite : bool, optional
-        _description_, by default False
+        whether overwrite file if existed, by default False
     """    
     import fitsio
     
@@ -296,6 +309,9 @@ def flat_correct(filelist: list, masterflat_filelist: dict[str, list],
             else:
                 new_fname = f"{img.stem}_{cur_stage}{file_suffix}"
             post_flat_file_loc = Path(output_dir, new_fname)
+            # retain size of the original image
+            if retain_original_image_size:
+                ccd_f.data = ccd_f.data.astype(ccd_im.data.dtype)
             ccd_f.write(post_flat_file_loc, overwrite=overwrite)
 
 # really should decompose this function into smaller functions
@@ -348,7 +364,7 @@ def reduce_images(
     
     cur_stage = "z"
     for img in all_img:
-        ccd_im = CCDData.read(img, unit=u.adu)
+        ccd_im = CCDData.read(img)
         # Default to use a chebyshev polynomial
         ccd_zt = overscan_sub_trim(ccd_im, overscan_fit=cheb)
         post_zt_file_loc = Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}")
@@ -375,7 +391,7 @@ def reduce_images(
             if img in bias_img:
                 continue
             img_last_stage = Path(output_dir, f"{img.stem}_{last_stage}{file_suffix}")
-            ccd_im = CCDData.read(img_last_stage, unit=u.adu)
+            ccd_im = CCDData.read(img_last_stage)
             ccd_b = ccdp.subtract_bias(ccd_im, combined_bias)
             # from _zt to _b suffix
             post_bias_file_loc = Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}")
@@ -405,7 +421,7 @@ def reduce_images(
             if img in dark_img:
                 continue
             img_last_stage = Path(output_dir, f"{img.stem}_{last_stage}{file_suffix}")
-            ccd_im = CCDData.read(img_last_stage, unit=u.adu)
+            ccd_im = CCDData.read(img_last_stage)
             ccd_d = ccdp.subtract_dark(ccd_im, combined_dark_clip_med)
             # from _zt to _b suffix
             dark_file_loc = Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}")
