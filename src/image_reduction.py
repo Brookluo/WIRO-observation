@@ -1,12 +1,12 @@
+from errno import EDEADLK
 import ccdproc as ccdp
 from astropy.nddata import CCDData
 import astropy.units as u
 import numpy as np
 from pathlib import Path
 import argparse
-import sys
 
-        
+
 def overscan_sub_trim(input_imdata, overscan_fit: callable):
     """Subtract the overscan region and then trim the image to remove
     the overscan region. This is a translation of Chip's WDPzero.cl
@@ -21,7 +21,7 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
 
     Returns
     -------
-    output_im : CCDData
+    CCDData
         the overscan subtracted and trimmed image
     """
     # Some really important notes about python and IRAF conversions
@@ -45,7 +45,7 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
     # type(adu) == uint16, what if we have minus counts causing overflow? (i.e.)
     # when the image count is actually all noise
     # change the datatype to int 64 to prevent that
-    ccd_im.data = ccd_im.data.astype(np.int64)
+    ccd_im.data = ccd_im.data.astype(np.uint64)
     # Now it is row-column, transpose the image to get column-row
     ccd_im.data = ccd_im.data.T
     # Following WDPzero.cl for four amplifiers
@@ -89,15 +89,18 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
     output_im.data[2049 - 1 : 4096, 2049 - 1 : 4096] = amp4_zt.data
 
     output_im.data = output_im.data.T
-    output_im.data = output_im.data.astype(np.int16)
+    # keep non-negative values
+    mask_neg = output_im.data < 0
+    output_im.data[mask_neg] = 0
+    output_im.data = output_im.data.astype(np.uint16)
     output_im.header = ccd_im.header
 
     return output_im
 
 
 def all_overscan_sub_trim(filelist: list, output_dir: str, polyfit='cheb', 
-                          overwrite=False):
-    """_summary_
+                          order=3, overwrite=False):
+    """Subtract and trim overscan region for all images in the filelist
 
     Parameters
     ----------
@@ -120,10 +123,10 @@ def all_overscan_sub_trim(filelist: list, output_dir: str, polyfit='cheb',
     from astropy.modeling import polynomial
     
     # list a bunch of polynomial models, usually 3rd order is enough
-    poly = polynomial.Polynomial1D(degree=3)
-    cheb = polynomial.Chebyshev1D(degree=3)
-    leg = polynomial.Legendre1D(degree=3)
-    herm = polynomial.Hermite1D(degree=3)
+    poly = polynomial.Polynomial1D(degree=order)
+    cheb = polynomial.Chebyshev1D(degree=order)
+    leg = polynomial.Legendre1D(degree=order)
+    herm = polynomial.Hermite1D(degree=order)
     if polyfit == 'cheb':
         fit_func = cheb
     elif polyfit == 'poly':
@@ -146,30 +149,26 @@ def all_overscan_sub_trim(filelist: list, output_dir: str, polyfit='cheb',
         ccd_zt.write(post_zt_file_loc, overwrite=overwrite)
 
 
-def bias_subtract(filelist: list, bias_filelist:list, output_dir: str, 
-                  overwrite=False, retain_original_image_size=True):
+def make_masterbias(bias_filelist: list, output_dir: str, overwrite=False,
+                    retain_original_image_size=True):
     """_summary_
 
     Parameters
     ----------
-    filelist : list
-        a list of files to be processed. All files in this list must be
-        full paths to them.
     bias_filelist : list
-        a list of bias files to be used for bias subtraction. All files in this list must be
-        full paths to them.
-    output_dir : str or pathlib.Path
-        the output directory, either a string or a pathlib.Path object
+        _description_
+    output_dir : str
+        _description_
     overwrite : bool, optional
-        whether overwrite file if existed, by default False
+        _description_, by default False
+    retain_original_image_size : bool, optional
+        _description_, by default True
     """
-    # assume all images have the same suffix
-    file_suffix = filelist[0].suffix
     # make master bias and bias subtraction
     # bias_zt_files = [Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}") for img in bias_filelist]
     dtype = None
     if retain_original_image_size:
-        one_bias = CCDData.read(bias_filelist[0], unit=u.adu)
+        one_bias = CCDData.read(bias_filelist[0])
         dtype = one_bias.data.dtype
     combined_bias = ccdp.combine(
         bias_filelist,
@@ -183,21 +182,51 @@ def bias_subtract(filelist: list, bias_filelist:list, output_dir: str,
         unit=u.adu,
         dtype=dtype,
     )
+    mask_neg = combined_bias.data < 0
+    combined_bias.data[mask_neg] = 0
+    # this line might not be necessary
+    combined_bias.data = combined_bias.data.astype(np.uint16)
     combined_bias.write(Path(output_dir, "masterbias.fits"), overwrite=overwrite)
+    return combined_bias
+
+
+def bias_subtract(filelist: list, bias_file:list, output_dir: str, 
+                  overwrite=False, retain_original_image_size=True):
+    """Subtract bias from all images in the filelist. Note that 
+    all stages after this step will introduce uncertainties, and thus
+    the image size will increase because of the additional uncertainty
+    array corresponding to each pixel.
+
+    Parameters
+    ----------
+    filelist : list
+        a list of files to be processed. All files in this list must be
+        full paths to them.
+    bias_file : Path
+        a Path object to the bias or masterbias file
+    output_dir : str or pathlib.Path
+        the output directory, either a string or a pathlib.Path object
+    overwrite : bool, optional
+        whether overwrite file if existed, by default False
+    """
+    # assume all images have the same suffix
+    file_suffix = filelist[0].suffix
+    combined_bias = CCDData.read(bias_file)
     # TODO need a criterion to decide whether to subtract masterbias or not
     
     cur_stage = "b"
     for img in filelist:
-        if img in bias_filelist:
-            continue
-        ccd_im = CCDData.read(img, unit=u.adu)
+        ccd_im = CCDData.read(img)
         ccd_b = ccdp.subtract_bias(ccd_im, combined_bias)
+        # keep non-negative values
+        mask_neg = ccd_b.data < 0
+        ccd_b.data[mask_neg] = 0
         # from _z to _zb suffix
         if "_" in img.stem:
             new_fname = f"{img.stem+cur_stage}{file_suffix}"
         else:
             new_fname = f"{img.stem}_{cur_stage}{file_suffix}"
-        post_bias_file_loc = Path(output_dir, new_fname )
+        post_bias_file_loc = Path(output_dir, new_fname)
         if retain_original_image_size:
             ccd_b.data = ccd_b.data.astype(ccd_im.data.dtype)
         ccd_b.write(post_bias_file_loc, overwrite=overwrite)
@@ -206,7 +235,7 @@ def bias_subtract(filelist: list, bias_filelist:list, output_dir: str,
 def inv_median(a):
     return 1 / np.median(a)
 
-def make_masterflat(filelist, output_dir, band, overwrite=False):
+def make_masterflat(filelist, output_dir, band, overwrite=False, save_plots=False):
     """Make a master flat for a given band using median combine with 3-sigma clipping.
     Two master flats are created. One with normalization by mean of the master flat, one
     is without the normalization.
@@ -235,8 +264,9 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
     #         flat_d.data /= np.median(flat_v_d.data)
     #         flat_d.write(f"{root_dir}/a{i:0>3}_d_medscaled.fits", overwrite=True)
     # use original image brightness
-    mean_count = np.array([np.mean(CCDData.read(file, unit=u.adu).data) for file in filelist])
+    mean_count = np.array([np.mean(CCDData.read(file).data) for file in filelist])
     mean_count /= np.sum(mean_count)
+    # Cannot set the dtype here, because the ratio is likely a float
     combined_flat_clip_med_weighted_avg = ccdp.combine(
         filelist,
         method="median",
@@ -247,8 +277,11 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
         sigma_clip_high_thresh=3,
         sigma_clip_func=np.ma.mean,
         sigma_clip_dev_func=np.ma.std,
-        unit=u.adu
+        unit=u.adu,
     )
+    # Need to keep everything non-negative
+    mask_neg = combined_flat_clip_med_weighted_avg.data < 0
+    combined_flat_clip_med_weighted_avg.data[mask_neg] = 0
     combined_flat_clip_med_weighted_avg.write(
         Path(output_dir, f"masterflat_{band}_clip_med_weighted_count.fits"),
         overwrite=overwrite,
@@ -266,19 +299,28 @@ def make_masterflat(filelist, output_dir, band, overwrite=False):
     ax[1].plot(combined_flat_clip_med_weighted_avg.data[:, 200].ravel())
     ax[1].set_ylabel("counts")
     ax[1].set_xlabel("pixel")
-    show_imstat(combined_flat_clip_med_weighted_avg.data)
+    if save_plots:
+        fig.suptitle('mean: {0}, std: {1}, median: {2}'.format(*show_imstat(combined_flat_clip_med_weighted_avg.data)),
+                     fontsize=25)
+        plt.savefig(Path(output_dir, f"masterflat_{band}.png"), edgecolor='white')
+    else:
+        plt.show()
+        show_imstat(combined_flat_clip_med_weighted_avg.data)
     return combined_flat_clip_med_weighted_avg
 
 
-def flat_correct(filelist: list, masterflat_filelist: dict[str, list], 
+def flat_correct(filelist, masterflat_filelist: dict[str, list], 
                 output_dir: str, overwrite=False, retain_original_image_size=True):
-    """_summary_
+    """Flat correct the images in the filelist using the master flat file corresponding
+    to each filter.
 
     Parameters
     ----------
-    filelist : list
-         a list of filenames of the given band flat images. All filenames must be
-        full path to that file.
+    filelist : list or dict
+        a list or dict of filenames of the given band flat images. All filenames must be
+        full path to that file. If given a dictionary, then the key is the band name, and
+        the value is a list of filenames. If given a list, then the band name is inferred
+        from each image's header.
     masterflat_filelist : dict[str, list]
         a dictionary of master flat filenames. The key is the band name, the value
         is the full path to the master flat file.
@@ -289,20 +331,25 @@ def flat_correct(filelist: list, masterflat_filelist: dict[str, list],
     """    
     import fitsio
     
-    file_suffix = filelist[0].suffix
-    # separate files into different filters
-    filter_image = {band: [] for band in masterflat_filelist.keys()}
-    for img in filelist:
-        header = fitsio.read_header(img)
-        # filter name is the string after column
-        # Filter 5: i' 54605
-        fitlername = header["FILTER"].rsplit(":")[-1].strip()
-        filter_image[fitlername].append(img)
+    if isinstance(filelist, list):
+        # separate files into different filters
+        filter_image = {band: [] for band in masterflat_filelist.keys()}
+        for img in filelist:
+            header = fitsio.read_header(img)
+            # filter name is the string after column
+            # Filter 5: i' 54605
+            fitlername = header["FILTER"].rsplit(":")[-1].strip()
+            filter_image[fitlername].append(img)
+    elif isinstance(filelist, dict):
+        filter_image = filelist
+    else:
+        raise ValueError(f"filelist must be a list or a dict, but got {type(filelist)}")
     cur_stage = "f"
     for band, masterflat in masterflat_filelist.items():
         for img in filter_image[band]:
-            ccd_im = CCDData.read(img, unit=u.adu)
-            ccd_masterflat = CCDData.read(masterflat, unit=u.adu)
+            file_suffix = img.suffix
+            ccd_im = CCDData.read(img)
+            ccd_masterflat = CCDData.read(masterflat)
             ccd_f = ccdp.flat_correct(ccd_im, ccd_masterflat)
             if "_" in img.stem:
                 new_fname = f"{img.stem+cur_stage}{file_suffix}"
