@@ -214,27 +214,37 @@ class WIROObs:
         pass
     
 
-    def flat_div(self):
+    def flat_div(self, master_flats=None):
         """_summary_
+
+        Parameters
+        ----------
+        master_flats : dict, optional
+            if provided master flats, using provided master flats directly. If none,
+            making master flats based on information from the class. By default None
         """        
-        if not self.done_overscan:
-            input_dir = self.input_dir
-            last_stage = ""
-        elif not self.done_bias:
-            input_dir = self.output_dir
-            last_stage = "z"
+        if master_flats is None:
+            if not self.done_overscan:
+                input_dir = self.input_dir
+                last_stage = ""
+            elif not self.done_bias:
+                input_dir = self.output_dir
+                last_stage = "z"
+            else:
+                input_dir = self.output_dir
+                last_stage = "zb"
+            # if give master flats, then skip this part
+            path_masterflat_tmpl = "masterflat_{0}_clip_med_weighted_count.fits"
+            # path_masterflat_tmpl = "masterflat_{0}_norm.fits"
+            for band in self.flat_filters:
+                make_masterflat(
+                    assemble_fullpath(input_dir, self.images_dict[f"flat_{band}"], last_stage), 
+                    self.output_dir, band, overwrite=self.redo_all|self.redo_flat,
+                    save_plots=True
+                    )
+                self.masterflats[band] = Path(self.output_dir, path_masterflat_tmpl.format(band))
         else:
-            input_dir = self.output_dir
-            last_stage = "zb"
-        path_masterflat_tmpl = "masterflat_{0}_clip_med_weighted_count.fits"
-        # path_masterflat_tmpl = "masterflat_{0}_norm.fits"
-        for band in self.flat_filters:
-            make_masterflat(
-                assemble_fullpath(input_dir, self.images_dict[f"flat_{band}"], last_stage), 
-                self.output_dir, band, overwrite=self.redo_all|self.redo_flat,
-                save_plots=True
-                )
-            self.masterflats[band] = Path(self.output_dir, path_masterflat_tmpl.format(band))
+            self.masterflats.update(master_flats)
         all_science = [v for k, v in self.images_dict.items() if k.startswith("sci_")]
         all_sci_path = assemble_fullpath(input_dir, flatten(all_science), last_stage)
         flat_correct(all_sci_path, self.masterflats, self.output_dir, overwrite=self.redo_all|self.redo_flat)
