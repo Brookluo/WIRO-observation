@@ -178,17 +178,26 @@ class WIROObs:
             ]
 
 
-    def overscan_sub_trim(self):
+    def overscan_sub_trim(self, polyfit='cheb', order=3):
         """_summary_"""
         all_images = flatten(list(self.images_dict.values()))
         files_fullpath = assemble_fullpath(self.input_dir, all_images)
-        all_overscan_sub_trim(files_fullpath, self.output_dir, polyfit='cheb', order=3,
+        all_overscan_sub_trim(files_fullpath, self.output_dir, 
+                              polyfit=polyfit, order=order,
                               overwrite=self.redo_all|self.redo_zt)
         self.done_overscan = True
         
 
-    def bias_sub(self):
-        """_summary_"""
+    def bias_sub(self, master_bias=None):
+        """_summary_
+        
+        Parameters
+        ----------
+        master_bias : Path, optional
+            if provided master bias, using provided master bias directly. If none,
+            making master bias based on information from the class object. 
+            By default None
+        """
         if not self.images_dict["bias"]:
             # logging.error("No bias images for bias subtraction!")
             raise ValueError("No bias images for bias subtraction!")
@@ -203,8 +212,12 @@ class WIROObs:
         # remove bias images from all images
         all_images = list(set(all_images) - set(self.images_dict["bias"]))
         all_fullpath = assemble_fullpath(input_dir, all_images, last_stage)
-        make_masterbias(bias_img, self.output_dir, overwrite=self.redo_all|self.redo_bias)
-        self.masterbias = Path(self.output_dir, "masterbias.fits")
+        if master_bias is None:
+            make_masterbias(bias_img, self.output_dir, 
+                            overwrite=self.redo_all|self.redo_bias)
+            self.masterbias = Path(self.output_dir, "masterbias.fits")
+        else:
+            self.masterbias = master_bias
         bias_subtract(all_fullpath, self.masterbias, self.output_dir, 
                         overwrite=self.redo_all|self.redo_bias)
         self.done_bias = True
@@ -221,18 +234,19 @@ class WIROObs:
         ----------
         master_flats : dict, optional
             if provided master flats, using provided master flats directly. If none,
-            making master flats based on information from the class. By default None
-        """        
+            making master flats based on information from the classobject. 
+            By default None
+        """
+        if not self.done_overscan:
+            input_dir = self.input_dir
+            last_stage = ""
+        elif not self.done_bias:
+            input_dir = self.output_dir
+            last_stage = "z"
+        else:
+            input_dir = self.output_dir
+            last_stage = "zb"
         if master_flats is None:
-            if not self.done_overscan:
-                input_dir = self.input_dir
-                last_stage = ""
-            elif not self.done_bias:
-                input_dir = self.output_dir
-                last_stage = "z"
-            else:
-                input_dir = self.output_dir
-                last_stage = "zb"
             # if give master flats, then skip this part
             path_masterflat_tmpl = "masterflat_{0}_clip_med_weighted_count.fits"
             # path_masterflat_tmpl = "masterflat_{0}_norm.fits"

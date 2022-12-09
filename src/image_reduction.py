@@ -90,9 +90,9 @@ def overscan_sub_trim(input_imdata, overscan_fit: callable):
 
     output_im.data = output_im.data.T
     # keep non-negative values
-    mask_neg = output_im.data < 0
-    output_im.data[mask_neg] = 0
-    output_im.data = output_im.data.astype(np.uint16)
+    # mask_neg = output_im.data < 0
+    # output_im.data[mask_neg] = 0
+    # output_im.data = output_im.data.astype(np.uint16)
     output_im.header = ccd_im.header
 
     return output_im
@@ -150,7 +150,7 @@ def all_overscan_sub_trim(filelist: list, output_dir: str, polyfit='cheb',
 
 
 def make_masterbias(bias_filelist: list, output_dir: str, overwrite=False,
-                    retain_original_image_size=True):
+                    retain_original_image_size=False):
     """_summary_
 
     Parameters
@@ -162,7 +162,8 @@ def make_masterbias(bias_filelist: list, output_dir: str, overwrite=False,
     overwrite : bool, optional
         _description_, by default False
     retain_original_image_size : bool, optional
-        _description_, by default True
+        whether retain the original image as the input image, by 
+        default True
     """
     # make master bias and bias subtraction
     # bias_zt_files = [Path(output_dir, f"{img.stem}_{cur_stage}{file_suffix}") for img in bias_filelist]
@@ -182,16 +183,16 @@ def make_masterbias(bias_filelist: list, output_dir: str, overwrite=False,
         unit=u.adu,
         dtype=dtype,
     )
-    mask_neg = combined_bias.data < 0
-    combined_bias.data[mask_neg] = 0
+    # mask_neg = combined_bias.data < 0
+    # combined_bias.data[mask_neg] = 0
     # this line might not be necessary
-    combined_bias.data = combined_bias.data.astype(np.uint16)
+    # combined_bias.data = combined_bias.data.astype(np.uint16)
     combined_bias.write(Path(output_dir, "masterbias.fits"), overwrite=overwrite)
     return combined_bias
 
 
 def bias_subtract(filelist: list, bias_file:list, output_dir: str, 
-                  overwrite=False, retain_original_image_size=True):
+                  overwrite=False, retain_original_image_size=False):
     """Subtract bias from all images in the filelist. Note that 
     all stages after this step will introduce uncertainties, and thus
     the image size will increase because of the additional uncertainty
@@ -208,6 +209,8 @@ def bias_subtract(filelist: list, bias_file:list, output_dir: str,
         the output directory, either a string or a pathlib.Path object
     overwrite : bool, optional
         whether overwrite file if existed, by default False
+    retain_original_image_size: bool, optional
+        whether retain the original image
     """
     # assume all images have the same suffix
     file_suffix = filelist[0].suffix
@@ -259,7 +262,7 @@ def make_masterflat(filelist, output_dir, band, overwrite=False, save_plots=Fals
     """
     from plot_utils import plot_zscale_image, show_imstat
     import matplotlib.pyplot as plt
-
+    from astropy.stats import mad_std
     # use inverse median to scale all the image to unity first
     #         flat_d.data /= np.median(flat_v_d.data)
     #         flat_d.write(f"{root_dir}/a{i:0>3}_d_medscaled.fits", overwrite=True)
@@ -269,14 +272,14 @@ def make_masterflat(filelist, output_dir, band, overwrite=False, save_plots=Fals
     # Cannot set the dtype here, because the ratio is likely a float
     combined_flat_clip_med_weighted_avg = ccdp.combine(
         filelist,
-        method="median",
-        weights=mean_count,
+        method="average",
+        # weights=mean_count,
         scale=inv_median,
         sigma_clip=True,
-        sigma_clip_low_thresh=3,
-        sigma_clip_high_thresh=3,
-        sigma_clip_func=np.ma.mean,
-        sigma_clip_dev_func=np.ma.std,
+        sigma_clip_low_thresh=2,
+        sigma_clip_high_thresh=2,
+        sigma_clip_func=np.ma.median,
+        sigma_clip_dev_func=mad_std,
         unit=u.adu,
     )
     # Need to keep everything non-negative
@@ -286,12 +289,12 @@ def make_masterflat(filelist, output_dir, band, overwrite=False, save_plots=Fals
         Path(output_dir, f"masterflat_{band}_clip_med_weighted_count.fits"),
         overwrite=overwrite,
     )
-    combined_flat_clip_med_weighted_avg.data /= np.mean(
-        combined_flat_clip_med_weighted_avg.data
-    )
-    combined_flat_clip_med_weighted_avg.write(
-        Path(output_dir, f"masterflat_{band}_norm.fits"), overwrite=overwrite
-    )
+    # combined_flat_clip_med_weighted_avg.data /= np.mean(
+    #     combined_flat_clip_med_weighted_avg.data
+    # )
+    # combined_flat_clip_med_weighted_avg.write(
+    #     Path(output_dir, f"masterflat_{band}_norm.fits"), overwrite=overwrite
+    # )
     fig, ax = plt.subplots(1, 2, figsize=(30, 10))
     plot_zscale_image(combined_flat_clip_med_weighted_avg.data, ax[0], "gray")
     ax[0].set_aspect("equal")
@@ -300,7 +303,7 @@ def make_masterflat(filelist, output_dir, band, overwrite=False, save_plots=Fals
     ax[1].set_ylabel("counts")
     ax[1].set_xlabel("pixel")
     if save_plots:
-        fig.suptitle('mean: {0}, std: {1}, median: {2}'.format(*show_imstat(combined_flat_clip_med_weighted_avg.data)),
+        fig.suptitle(band + ' mean: {0}, std: {1}, median: {2}'.format(*show_imstat(combined_flat_clip_med_weighted_avg.data)),
                      fontsize=25)
         plt.savefig(Path(output_dir, f"masterflat_{band}.png"), edgecolor='white')
     else:
@@ -310,7 +313,8 @@ def make_masterflat(filelist, output_dir, band, overwrite=False, save_plots=Fals
 
 
 def flat_correct(filelist, masterflat_filelist: dict[str, list], 
-                output_dir: str, overwrite=False, retain_original_image_size=True):
+                output_dir: str, overwrite=False,
+                retain_original_image_size=False):
     """Flat correct the images in the filelist using the master flat file corresponding
     to each filter.
 
@@ -328,6 +332,8 @@ def flat_correct(filelist, masterflat_filelist: dict[str, list],
         the output directory, either a string or a pathlib.Path object
     overwrite : bool, optional
         whether overwrite file if existed, by default False
+    retain_original_image_size: bool, optional,
+        whether to retain the original image size, by default False.
     """    
     import fitsio
     
@@ -361,6 +367,8 @@ def flat_correct(filelist, masterflat_filelist: dict[str, list],
                 ccd_f.data = ccd_f.data.astype(ccd_im.data.dtype)
             ccd_f.write(post_flat_file_loc, overwrite=overwrite)
 
+def make_masterdark():
+    pass
 # really should decompose this function into smaller functions
 # so each function just process one stage
 def reduce_images(

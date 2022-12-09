@@ -49,7 +49,7 @@ def plot_zscale_image(imdata: np.ndarray, ax_handle, cmap=None, vmin=None, vmax=
         colormap, by default None
     vmin : float, optional
         lower limit for color map, by default None
-    vmax : _type_, optional
+    vmax : float, optional
         upper limit for color map, by default None
     """    
     zscale = ZScaleInterval()
